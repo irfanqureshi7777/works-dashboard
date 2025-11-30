@@ -1,149 +1,8 @@
-// app.js — updated for youraa backend.gs (send top-level fields for appendOrUpdateUser)
-// Put this file in the same folder as index.html (replace current app.js)
-
-window.APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbz34Ak_pwJHdnVAvYsP9CiCQkd7EO50hDMySIy8a2O4OMt5ZAx7EtkKv4Anb-eYDQn90Q/exec";
-
-/* Helpers */
-function qs(id){ try { return document.getElementById(id); } catch(e) { return null; } }
-function dbg(id,obj){ try { const el = qs(id); if (el) el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj,null,2); else console.log(id,obj); } catch(e){ console.log(e); } }
-function escapeHtml(s){ return (''+s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function decodeHtml(s){ if (s === null || s === undefined) return s; return s.replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&#39;/g,"'"); }
-function toNum(v){ if (v===null||v===undefined) return NaN; const s=(''+v).replace(/,/g,'').trim(); if(s==='') return NaN; const n=Number(s); return isNaN(n)?NaN:n; }
-function fmt(n){ if (n===''||n===null||n===undefined) return ''; if (isNaN(n)) return ''; if (Math.abs(n)>=1000) return Number(n).toLocaleString(); if (Math.abs(n - Math.round(n))>0 && Math.abs(n) < 1) return Number(n).toFixed(4); if (Math.abs(n - Math.round(n))>0) return Number(n).toFixed(4); return String(Math.round(n)); }
-
-/* safeFetchJson */
-async function safeFetchJson(response){
-  const txt = await response.text();
-  try { return JSON.parse(txt); }
-  catch(e){ return { ok:false, error:'non-json-response', status: response.status, statusText: response.statusText, raw: txt }; }
+// ---------- REPLACE EXISTING renderTable + installRowClickHandlers WITH THIS ----------
+function slug(s){
+  return (''+s).toLowerCase().replace(/\s+/g,'_').replace(/[^\w\-]/g,'').replace(/^_+|_+$/g,'');
 }
 
-/* JSONP fallback */
-function jsonpFetch(url, cbParam='callback', timeoutMs=8000){
-  return new Promise((resolve, reject) => {
-    const cbName = '__jsonp_cb_' + Math.random().toString(36).slice(2);
-    window[cbName] = function(data){ resolve(data); cleanup(); };
-    const script = document.createElement('script');
-    const sep = url.indexOf('?') === -1 ? '?' : '&';
-    script.src = url + sep + encodeURIComponent(cbParam) + '=' + cbName;
-    script.onerror = function(){ reject(new Error('JSONP script load error')); cleanup(); };
-    const to = setTimeout(()=>{ reject(new Error('JSONP timeout')); cleanup(); }, timeoutMs);
-    function cleanup(){ clearTimeout(to); try{ delete window[cbName]; }catch(e){} script.remove(); }
-    document.head.appendChild(script);
-  });
-}
-
-/* callApi - GET/POST with JSONP fallback */
-async function callApi(action, method='GET', payload=null){
-  if (!window.APPSCRIPT_URL) return Promise.reject(new Error('APPSCRIPT_URL not set'));
-  if (method === 'GET') {
-    const u = new URL(window.APPSCRIPT_URL);
-    u.searchParams.set('action', action);
-    if (payload && typeof payload === 'object') Object.keys(payload).forEach(k=>u.searchParams.set(k, typeof payload[k]==='string'? payload[k]: JSON.stringify(payload[k])));
-    try {
-      const resp = await fetch(u.toString(), { method:'GET', mode:'cors' });
-      return await safeFetchJson(resp);
-    } catch(err){
-      try { const data = await jsonpFetch(u.toString(), 'callback'); return data; } catch(e){ return Promise.reject(e); }
-    }
-  } else {
-    // POST: send top-level keys (Apps Script expects name/post/dcode/panchayats etc.)
-    const params = new URLSearchParams();
-    params.set('action', action);
-    if (payload && typeof payload === 'object') {
-      Object.keys(payload).forEach(k => {
-        const v = payload[k];
-        // For arrays (panchayats), send JSON string so Apps Script can parse if needed
-        if (Array.isArray(v)) params.set(k, JSON.stringify(v));
-        else params.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
-      });
-    }
-    try {
-      const resp = await fetch(window.APPSCRIPT_URL, {
-        method:'POST',
-        headers:{ 'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: params.toString(),
-        mode:'cors'
-      });
-      return await safeFetchJson(resp);
-    } catch(err){
-      // fallback to JSONP GET-style (only works if server supports callback)
-      try {
-        const u = new URL(window.APPSCRIPT_URL);
-        u.searchParams.set('action', action);
-        if (payload && typeof payload === 'object') Object.keys(payload).forEach(k=>u.searchParams.set(k, typeof payload[k]==='string'? payload[k]: JSON.stringify(payload[k])));
-        const data = await jsonpFetch(u.toString(), 'callback');
-        return data;
-      } catch(e){ return Promise.reject(e); }
-    }
-  }
-}
-
-/* sanitizeFilter */
-function sanitizeFilter(input){
-  const keys = ['engineer','gp','work','status','year','search','category'];
-  const out = {};
-  input = input || {};
-  keys.forEach(k=>{
-    let v = input[k];
-    if (v === null || v === undefined) { out[k] = ''; return; }
-    if (typeof v === 'string') v = v.trim();
-    else v = (''+v).trim();
-    out[k] = v;
-  });
-  return out;
-}
-
-/* uniqClean used for categories fallback */
-function uniqClean(arr){
-  const seen = new Set(); const out = [];
-  (arr||[]).forEach(x=>{
-    if (x === null || x === undefined) return;
-    let s = (''+x).trim(); if (!s) return;
-    const low = s.toLowerCase();
-    if (low === 'total' || low === 'na' || low === 'n/a' || low === 'nan') return;
-    if (/^[\d\.\-\,\s]+$/.test(s)) return;
-    if (s.length <= 1) return;
-    s = s.replace(/\s+/g,' ').trim();
-    if (seen.has(s)) return;
-    seen.add(s); out.push(s);
-  });
-  out.sort(); return out;
-}
-
-/* populate helper */
-function populate(id, arr){
-  const sel = qs(id); if(!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">--All--</option>';
-  (arr||[]).forEach(v=>{
-    if (v === null || v === undefined) return;
-    const sv = (''+v).trim();
-    if (sv === '') return;
-    const o = document.createElement('option'); o.value = sv; o.textContent = sv; sel.appendChild(o);
-  });
-  try { if (cur) sel.value = cur; } catch(e){}
-}
-
-/* Parse percent value robustly (handles '75', '75%', '0.75' -> returns 75) */
-function parsePercentValue(raw) {
-  if (raw === null || raw === undefined) return NaN;
-  let s = (''+raw).toString().trim();
-  // remove any trailing/leading non-digit characters except dot and minus
-  // but keep % for detection
-  const hasPercent = s.indexOf('%') !== -1;
-  s = s.replace(/[^0-9.\-]/g, '');
-  if (s === '') return NaN;
-  let n = Number(s);
-  if (isNaN(n)) return NaN;
-  if (hasPercent) return n;
-  // If small (<=1) treat 0.75 as 75%
-  if (Math.abs(n) <= 1) return n * 100;
-  // If likely already percent (e.g., 75), return as-is
-  return n;
-}
-
-/* renderTable + modal (kept concise, same behaviour) */
 function renderTable(rows){
   const out = qs('output'); if (!out) return;
   out.innerHTML = '';
@@ -151,15 +10,37 @@ function renderTable(rows){
   if (!Array.isArray(rows)) { try { rows = Object.values(rows); } catch(e){ rows = []; } }
   if (!rows || rows.length === 0) { out.innerHTML = '<div class="card">No data for selected filters</div>'; return; }
 
+  // define headers with keys (data-col) and display labels
   const headers = [
-    "S No.","Engineer","Gram Panchayat","Type of work","Name of work",
-    "Year of Work","Status","Unskilled","Semi-skilled","Skilled","Material","Contingency","Total Cost",
-    "Unskilled Exp","Semi-skilled Exp","Skilled Exp","Material Exp","Contingency Exp","Total Exp",
-    "Category","Balance Mandays","% expenditure","Remark"
+    {k:'sr', label:'S No.'},
+    {k:'engineer', label:'Engineer'},
+    {k:'gp', label:'Gram Panchayat'},
+    {k:'type_of_work', label:'Type of work'},
+    {k:'name_of_work', label:'Name of work'},
+    {k:'year_of_work', label:'Year of Work'},
+    {k:'status', label:'Status'},
+    {k:'unskilled', label:'Unskilled'},
+    {k:'semi_skilled', label:'Semi-skilled'},
+    {k:'skilled', label:'Skilled'},
+    {k:'material', label:'Material'},
+    {k:'contingency', label:'Contingency'},
+    {k:'total_cost', label:'Total Cost'},
+    {k:'unskilled_exp', label:'Unskilled Exp'},
+    {k:'semi_skilled_exp', label:'Semi-skilled Exp'},
+    {k:'skilled_exp', label:'Skilled Exp'},
+    {k:'material_exp', label:'Material Exp'},
+    {k:'contingency_exp', label:'Contingency Exp'},
+    {k:'total_exp', label:'Total Exp'},
+    {k:'category', label:'Category'},
+    {k:'balance_mandays', label:'Balance Mandays'},
+    {k:'pct_expenditure', label:'% expenditure'},
+    {k:'remark', label:'Remark'}
   ];
 
-  let html = '<table id="dataTable"><thead><tr>';
-  headers.forEach((h)=> html += '<th>' + escapeHtml(h) + '</th>');
+  let html = '<table id="worksTable"><thead><tr>';
+  headers.forEach(h => {
+    html += '<th data-col="'+h.k+'">' + escapeHtml(h.label) + '</th>';
+  });
   html += '</tr></thead><tbody>';
 
   const toNumLocal = v => { if (v === null || v === undefined) return NaN; const s = (''+v).replace(/,/g,'').trim(); if (s === '') return NaN; const n = Number(s); return isNaN(n)?NaN:n; };
@@ -169,42 +50,42 @@ function renderTable(rows){
     arr = arr.map(x => x===null||x===undefined? '' : (''+x).trim());
 
     const map = {};
-    map['Engineer'] = arr[1] !== undefined ? arr[1] : '';
-    map['Gram Panchayat'] = arr[2] !== undefined ? arr[2] : '';
-    map['Type of work'] = arr[3] !== undefined ? arr[3] : '';
-    map['Name of work'] = arr[4] !== undefined ? arr[4] : '';
-    map['Year of Work'] = arr[5] !== undefined ? arr[5] : '';
-    map['Status'] = arr[6] !== undefined ? arr[6] : '';
+    map['engineer'] = arr[1] !== undefined ? arr[1] : '';
+    map['gp'] = arr[2] !== undefined ? arr[2] : '';
+    map['type_of_work'] = arr[3] !== undefined ? arr[3] : '';
+    map['name_of_work'] = arr[4] !== undefined ? arr[4] : '';
+    map['year_of_work'] = arr[5] !== undefined ? arr[5] : '';
+    map['status'] = arr[6] !== undefined ? arr[6] : '';
 
-    map['Unskilled'] = toNumLocal(arr[7]);
-    map['Semi-skilled'] = toNumLocal(arr[8]);
-    map['Skilled'] = toNumLocal(arr[9]);
-    map['Material'] = toNumLocal(arr[10]);
-    map['Contingency'] = toNumLocal(arr[11]);
+    map['unskilled'] = toNumLocal(arr[7]);
+    map['semi_skilled'] = toNumLocal(arr[8]);
+    map['skilled'] = toNumLocal(arr[9]);
+    map['material'] = toNumLocal(arr[10]);
+    map['contingency'] = toNumLocal(arr[11]);
     const sheetTotalCost = toNumLocal(arr[12]);
-    map['Total Cost'] = !isNaN(sheetTotalCost) ? sheetTotalCost : NaN;
+    map['total_cost'] = !isNaN(sheetTotalCost) ? sheetTotalCost : NaN;
 
-    map['Unskilled Exp'] = toNumLocal(arr[13]);
-    map['Semi-skilled Exp'] = toNumLocal(arr[14]);
-    map['Skilled Exp'] = toNumLocal(arr[15]);
-    map['Material Exp'] = toNumLocal(arr[16]);
-    map['Contingency Exp'] = toNumLocal(arr[17]);
+    map['unskilled_exp'] = toNumLocal(arr[13]);
+    map['semi_skilled_exp'] = toNumLocal(arr[14]);
+    map['skilled_exp'] = toNumLocal(arr[15]);
+    map['material_exp'] = toNumLocal(arr[16]);
+    map['contingency_exp'] = toNumLocal(arr[17]);
     const sheetTotalExp = toNumLocal(arr[18]);
-    map['Total Exp'] = !isNaN(sheetTotalExp) ? sheetTotalExp : NaN;
+    map['total_exp'] = !isNaN(sheetTotalExp) ? sheetTotalExp : NaN;
 
-    map['Category'] = arr[19] !== undefined ? arr[19] : '';
-    map['Balance Mandays'] = arr[20] !== undefined ? arr[20] : '';
-    map['% expenditure'] = arr[21] !== undefined ? arr[21] : '';
-    map['Remark'] = arr[22] !== undefined ? arr[22] : '';
+    map['category'] = arr[19] !== undefined ? arr[19] : '';
+    map['balance_mandays'] = arr[20] !== undefined ? arr[20] : '';
+    map['pct_expenditure'] = arr[21] !== undefined ? arr[21] : '';
+    map['remark'] = arr[22] !== undefined ? arr[22] : '';
 
     try {
-      if (isNaN(map['Total Cost'])) {
-        const totalPl = [map['Unskilled'],map['Semi-skilled'],map['Skilled'],map['Material'],map['Contingency']].reduce((a,b)=> a + (isNaN(b)?0:b), 0);
-        if (!isNaN(totalPl) && totalPl !== 0) map['Total Cost'] = totalPl;
+      if (isNaN(map['total_cost'])) {
+        const totalPl = [map['unskilled'],map['semi_skilled'],map['skilled'],map['material'],map['contingency']].reduce((a,b)=> a + (isNaN(b)?0:b), 0);
+        if (!isNaN(totalPl) && totalPl !== 0) map['total_cost'] = totalPl;
       }
-      if (isNaN(map['Total Exp'])) {
-        const totalEx = [map['Unskilled Exp'],map['Semi-skilled Exp'],map['Skilled Exp'],map['Material Exp'],map['Contingency Exp']].reduce((a,b)=> a + (isNaN(b)?0:b), 0);
-        if (!isNaN(totalEx) && totalEx !== 0) map['Total Exp'] = totalEx;
+      if (isNaN(map['total_exp'])) {
+        const totalEx = [map['unskilled_exp'],map['semi_skilled_exp'],map['skilled_exp'],map['material_exp'],map['contingency_exp']].reduce((a,b)=> a + (isNaN(b)?0:b), 0);
+        if (!isNaN(totalEx) && totalEx !== 0) map['total_exp'] = totalEx;
       }
     } catch(e){}
 
@@ -215,52 +96,68 @@ function renderTable(rows){
       if (!isNaN(p) && isNaN(e)) return p;
       return (p - e);
     }
-    map['Unskilled Balance'] = comp(map['Unskilled'], map['Unskilled Exp']);
-    map['Semi-skilled Balance'] = comp(map['Semi-skilled'], map['Semi-skilled Exp']);
-    map['Skilled Balance'] = comp(map['Skilled'], map['Skilled Exp']);
-    map['Material Balance'] = comp(map['Material'], map['Material Exp']);
-    map['Contingency Balance'] = comp(map['Contingency'], map['Contingency Exp']);
-    map['Total Balance'] = comp(map['Total Cost'], map['Total Exp']);
+    map['unskilled_balance'] = comp(map['unskilled'], map['unskilled_exp']);
+    map['semi_skilled_balance'] = comp(map['semi_skilled'], map['semi_skilled_exp']);
+    map['skilled_balance'] = comp(map['skilled'], map['skilled_exp']);
+    map['material_balance'] = comp(map['material'], map['material_exp']);
+    map['contingency_balance'] = comp(map['contingency'], map['contingency_exp']);
+    map['total_balance'] = comp(map['total_cost'], map['total_exp']);
 
     map._raw = arr.slice();
 
-    const disp = headers.slice(1).map(h => {
-      let rawv = (map.hasOwnProperty(h) ? map[h] : '');
-      if (rawv === null || rawv === undefined) rawv = '';
+    // build the row HTML with data-col on each td
+    html += '<tr data-payload=\'' + escapeHtml(JSON.stringify(map)) + '\'>';
+    // sr column
+    html += '<td data-col="sr">' + (ridx + 1) + '</td>';
 
-      if (h === 'Engineer') {
-        let v = (''+rawv).replace(/^\s*\d+\s*[\.\-\)\:]*\s*/,'').trim(); return v;
-      }
-      if (h === 'Balance Mandays') {
-        const n = Number((''+rawv).replace(/,/g,'')); if (!isNaN(n)) return String(Math.round(n)); return (rawv===''? '': ''+rawv);
-      }
-      if (h === '% expenditure') {
-        let rv = ('' + (rawv || '')).toString().trim();
-        if (rv === '') return '';
-        if (rv.indexOf('%') !== -1) return rv;
-        let pnum = Number(rv); if (isNaN(pnum)) return rv;
-        if (Math.abs(pnum) <= 1) pnum = pnum * 100;
-        return Math.round(pnum) + '%';
-      }
-      if (rawv === '') return '';
-      return (''+rawv).trim();
+    // fill other columns in same order as headers.slice(1)
+    headers.slice(1).forEach(h => {
+      let val = '';
+      try {
+        if (h.k === 'sr') val = (ridx+1);
+        else if (map.hasOwnProperty(h.k)) {
+          if (h.k === 'pct_expenditure') {
+            let rv = ('' + (map[h.k] || '')).toString().trim();
+            if (rv === '') val = '';
+            else if (rv.indexOf('%') !== -1) val = rv;
+            else {
+              let pnum = Number(rv);
+              if (isNaN(pnum)) val = rv;
+              else {
+                if (Math.abs(pnum) <= 1) pnum = pnum * 100;
+                val = Math.round(pnum) + '%';
+              }
+            }
+          } else if (h.k === 'balance_mandays') {
+            const bm = Number(('' + (map[h.k] || '')).replace(/,/g,'')); val = isNaN(bm)? (map[h.k] || '') : String(Math.round(bm));
+          } else if (['unskilled','semi_skilled','skilled','material','contingency','total_cost','unskilled_exp','semi_skilled_exp','skilled_exp','material_exp','contingency_exp','total_exp','unskilled_balance','semi_skilled_balance','skilled_balance','material_balance','contingency_balance','total_balance'].indexOf(h.k) !== -1) {
+            const n = map[h.k]; val = (n === '' || n === null || n === undefined) ? '' : (isNaN(n) ? ''+n : fmt(n));
+          } else {
+            val = (map[h.k] === null || map[h.k] === undefined) ? '' : (''+map[h.k]);
+            // small cleanup for engineer field
+            if (h.k === 'engineer') val = (''+val).replace(/^\s*\d+\s*[\.\-\)\:]*\s*/,'').trim();
+          }
+        } else {
+          val = '';
+        }
+      } catch(e){ val = ''; }
+      html += '<td data-col="'+h.k+'">' + escapeHtml(val) + '</td>';
     });
 
-    const payload = Object.assign({}, map);
-    html += '<tr data-payload=\'' + escapeHtml(JSON.stringify(payload)) + '\'>';
-    html += '<td>' + (ridx + 1) + '</td>';
-    disp.forEach(cell => html += '<td>' + escapeHtml(cell) + '</td>');
     html += '</tr>';
   });
 
   html += '</tbody></table>';
   out.innerHTML = html;
-  installRowClickHandlers();
+  installRowClickHandlers(); // will attach to worksTable rows
   dbg('debugDash','Rendered ' + rows.length + ' rows (sheet-mapped).');
+
+  // let other UI hooks know table is ready (index.html exposes window.__worksUI)
+  try { if (window.__worksUI && typeof window.__worksUI.rebuild === 'function') window.__worksUI.rebuild(); } catch(e){}
 }
 
 function installRowClickHandlers(){
-  const table = qs('dataTable'); if (!table) return;
+  const table = qs('worksTable'); if (!table) return;
   table.querySelectorAll('tbody tr').forEach(tr=>{
     tr.style.cursor = 'pointer';
     tr.onclick = () => {
@@ -271,420 +168,4 @@ function installRowClickHandlers(){
     };
   });
 }
-
-/* Modal logic (kept same) */
-const modalOverlay = qs('modalOverlay'), modalTitle = qs('modalTitle'), modalMeta = qs('modalMeta'), modalBody = qs('modalBody');
-let currentModalData = null;
-
-function showModalDetail(map){
-  currentModalData = map;
-  const name = map['Name of work'] || '';
-  const gp = map['Gram Panchayat'] || '';
-  const type = map['Type of work'] || '';
-  const year = map['Year of Work'] || map['Year'] || '';
-  const status = map['Status'] || '';
-  const category = map['Category'] || '';
-  const pctRaw = map['% expenditure'] || '';
-  const balanceMandaysRaw = map['Balance Mandays'] || '';
-
-  if (modalTitle) modalTitle.textContent = name || 'Work Details';
-  if (modalMeta) modalMeta.textContent = gp + (type? ('  |  ' + type):'') + (year? ('  |  ' + year):'') + (status? ('  |  ' + status):'');
-
-  const plannedArr = [
-    toNum(map['Unskilled']), toNum(map['Semi-skilled']), toNum(map['Skilled']),
-    toNum(map['Material']), toNum(map['Contingency']), toNum(map['Total Cost'])
-  ];
-  const expArr = [
-    toNum(map['Unskilled Exp']), toNum(map['Semi-skilled Exp']), toNum(map['Skilled Exp']),
-    toNum(map['Material Exp']), toNum(map['Contingency Exp']), toNum(map['Total Exp'])
-  ];
-  const parts = ['Unskilled','Semi-skilled','Skilled','Material','Contingency','Total Cost'];
-
-  let html = '';
-  html += '<div class="sections-grid">';
-  html += '<div class="hdr">Particular</div><div class="hdr">Section</div><div class="hdr">Expenditure</div><div class="hdr">Balance</div>';
-  for (let i=0;i<6;i++){
-    const s = (!isNaN(plannedArr[i])? plannedArr[i] : '');
-    const e = (!isNaN(expArr[i])? expArr[i] : '');
-    let bal = '';
-    if (s !== '' && e !== '') bal = s - e;
-    else if (s !== '' && (e === '' || isNaN(e))) bal = s;
-    else if ((s === '' || isNaN(s)) && e !== '') bal = -e;
-
-    html += '<div class="part">' + escapeHtml(parts[i]) + '</div>';
-    html += '<div class="cell num">' + (s === ''? '': fmt(s)) + '</div>';
-    html += '<div class="cell num">' + (e === ''? '': fmt(e)) + '</div>';
-    html += '<div class="cell num">' + (bal === ''? '': fmt(bal)) + '</div>';
-  }
-  html += '</div>';
-
-  let pctDisplay = '';
-  try {
-    if (pctRaw !== '' && pctRaw !== null && pctRaw !== undefined) {
-      let s = (''+pctRaw).replace(/%/g,'').trim(); let num = Number(s);
-      if (!isNaN(num)) { if (Math.abs(num) <= 1) num = num * 100; pctDisplay = Math.round(num) + '%'; } else pctDisplay = s;
-    } else {
-      const totalPlanned = plannedArr.reduce? plannedArr.reduce((a,b)=> a + (isNaN(b)?0:b),0) : NaN;
-      const totalExp = expArr.reduce? expArr.reduce((a,b)=> a + (isNaN(b)?0:b),0) : NaN;
-      if (!isNaN(totalPlanned) && totalPlanned !== 0 && !isNaN(totalExp)) pctDisplay = Math.round((totalExp / totalPlanned) * 100) + '%';
-      else pctDisplay = '';
-    }
-  } catch(e){ pctDisplay = ''; }
-
-  let balMandaysDisplay = '';
-  try { const bm = Number(('' + (balanceMandaysRaw || '')).replace(/,/g,'')); if (!isNaN(bm)) balMandaysDisplay = String(Math.round(bm)); else balMandaysDisplay = (balanceMandaysRaw || ''); } catch(e){ balMandaysDisplay = (balanceMandaysRaw || ''); }
-
-  html += '<div style="margin-top:12px;color:var(--muted)"><strong>Category:</strong> ' + escapeHtml(category) + '  &nbsp; | &nbsp; <strong>% Exp:</strong> ' + escapeHtml(pctDisplay) + '  &nbsp; | &nbsp; <strong>Balance Mandays:</strong> ' + escapeHtml(balMandaysDisplay) + '</div>';
-
-  if (map._raw && Array.isArray(map._raw)) html += '<details style="margin-top:10px"><summary>Raw row data (debug)</summary><pre>' + escapeHtml(JSON.stringify(map._raw, null,2)) + '</pre></details>';
-
-  if (modalBody) modalBody.innerHTML = html;
-  openModal();
-}
-function openModal(){ if(modalOverlay){ modalOverlay.style.display = 'flex'; document.body.style.overflow='hidden'; modalOverlay.setAttribute('aria-hidden','false'); } }
-function closeModal(){ if(modalOverlay){ modalOverlay.style.display = 'none'; document.body.style.overflow='auto'; modalOverlay.setAttribute('aria-hidden','true'); if(qs('modalBody')) qs('modalBody').innerHTML = ''; } }
-if (qs('modalClose')) qs('modalClose').addEventListener('click', closeModal);
-if (modalOverlay) modalOverlay.addEventListener('click', function(e){ if (e.target === modalOverlay) closeModal(); });
-
-/* export modal CSV */
-if (qs('modalExport')) qs('modalExport').addEventListener('click', function(){
-  const map = currentModalData; if (!map) return alert('No data');
-  const planned = ['Unskilled','Semi-skilled','Skilled','Material','Contingency','Total Cost'].map(k=> toNum(map[k]));
-  const exp = ['Unskilled Exp','Semi-skilled Exp','Skilled Exp','Material Exp','Contingency Exp','Total Exp'].map(k=> toNum(map[k]));
-  const rows = []; rows.push(['Name of work', map['Name of work'] || '']); rows.push(['Gram Panchayat', map['Gram Panchayat'] || '']); rows.push([]); rows.push(['Particular','Section','Expenditure','Balance']);
-  const parts = ['Unskilled','Semi-skilled','Skilled','Material','Contingency','Total Cost'];
-  for(let i=0;i<6;i++){
-    const s = (planned && !isNaN(planned[i]))? planned[i] : '';
-    const e = (exp && !isNaN(exp[i]))? exp[i] : '';
-    let bal='';
-    if(s!==''&& e!=='') bal = s-e;
-    else if(s!=='' && (e===''||isNaN(e))) bal = s;
-    else if((s===''||isNaN(s)) && e!=='') bal = -e;
-    rows.push([parts[i], ''+s, ''+e, ''+bal]);
-  }
-  const csv = rows.map(r => r.map(cell=>{
-    let txt = (cell===null||cell===undefined)?'':(''+cell);
-    if (txt.indexOf('"') !== -1) txt = txt.replace(/"/g,'""');
-    if (txt.indexOf(',') !== -1 || txt.indexOf('"') !== -1) return '"' + txt + '"';
-    return txt;
-  }).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = ((map['Name of work']||'work').toString().replace(/[^\w\-]/g,'_').slice(0,60)) + '_details.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-});
-
-/* export whole table */
-if (qs('exportBtn')) qs('exportBtn').addEventListener('click', ()=> {
-  const table = qs('dataTable'); if (!table) return alert('No table to export');
-  const rows = Array.from(table.querySelectorAll('thead tr, tbody tr'));
-  const csv = rows.map(tr=>{
-    const cells = Array.from(tr.querySelectorAll('th,td')).map(td=>{
-      let txt = td.innerText.replace(/\r?\n/g,' ').trim();
-      if (txt.indexOf('"') !== -1) txt = txt.replace(/"/g,'""');
-      if (txt.indexOf(',') !== -1 || txt.indexOf('"')!==-1) return '"' + txt + '"';
-      return txt;
-    });
-    return cells.join(',');
-  }).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = 'works_dashboard.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-});
-
-/* fetchTable */
-async function fetchTable(filter, userid){
-  try {
-    if (!userid) { alert('Please login first'); return; }
-    const filt = sanitizeFilter(filter || {});
-    dbg('debugDash',{ sendingFilter: filt, userid: userid });
-
-    // Call backend (existing function). Backend may not filter category server-side,
-    // so we apply a client-side category filter as a safe fallback.
-    const res = await callApi('getFilteredData','POST',{ filter: filt, userid: userid });
-    dbg('debugDash',{filteredRes:res});
-    let rows = [];
-    if (!res) rows = [];
-    else if (Array.isArray(res)) rows = res;
-    else if (res.rows && Array.isArray(res.rows)) rows = res.rows;
-    else if (res.result && Array.isArray(res.result)) rows = res.result;
-    else if (res.data && res.data.rows && Array.isArray(res.data.rows)) rows = res.data.rows;
-    else {
-      try {
-        const maybe = Object.values(res).find(v => Array.isArray(v));
-        if (Array.isArray(maybe)) rows = maybe;
-      } catch(e){}
-    }
-
-    // CLIENT-SIDE CATEGORY FILTER (fallback)
-    // Your sheet stores category possibly in column T(19)/U(20)/V(21) indexes 19,20,21.
-    // Normalize and match case-insensitively; allow partial match as well.
-    try {
-      const cat = (filt.category || '').toString().trim().toLowerCase();
-      if (cat) {
-        rows = (rows || []).filter(r => {
-          // r may be an array-like row
-          const c19 = ('' + (Array.isArray(r) ? r[19] : (r[19] || ''))).toLowerCase();
-          const c20 = ('' + (Array.isArray(r) ? r[20] : (r[20] || ''))).toLowerCase();
-          const c21 = ('' + (Array.isArray(r) ? r[21] : (r[21] || ''))).toLowerCase();
-          if (!c19 && !c20 && !c21) return false;
-          // exact or contains match
-          return c19 === cat || c20 === cat || c21 === cat || c19.indexOf(cat) !== -1 || c20.indexOf(cat) !== -1 || c21.indexOf(cat) !== -1;
-        });
-      }
-    } catch(e){
-      console.warn('category client-filter failed', e);
-    }
-
-    // Save full result for client-side filtering (percent filter etc.)
-    window.allData = Array.isArray(rows) ? rows.slice() : [];
-
-    renderTable(rows);
-  } catch(err){ dbg('debugDash',{fetchTableError:String(err)}); }
-}
-
-/* Percent filter function - uses window.allData */
-function applyPercentFilter(threshold, mode) {
-  // threshold -> numeric percent (e.g., 75)
-  if (threshold === null || threshold === undefined) threshold = 0;
-  threshold = Number(threshold);
-  if (isNaN(threshold)) { alert('Enter a valid numeric threshold'); return; }
-  const modeLower = (''+mode).toLowerCase();
-
-  if (!window.allData || !Array.isArray(window.allData)) {
-    alert('No data loaded. Please login or apply other filters first.');
-    return;
-  }
-
-  const colIndexV = 21; // Column V = 22nd column, zero-based index 21
-  const filtered = window.allData.filter(r => {
-    const raw = (Array.isArray(r) ? r[colIndexV] : (r[colIndexV] || ''));
-    const pct = parsePercentValue(raw); // returns numeric percent (0..100)
-    if (isNaN(pct)) return false;
-    if (modeLower === 'above') return pct > threshold;
-    if (modeLower === 'below') return pct < threshold;
-    return false;
-  });
-
-  renderTable(filtered);
-}
-
-/* Login / Logout */
-if (qs('loginBtn')) qs('loginBtn').addEventListener('click', ()=>{ const v = qs('loginInput').value.trim(); if (!v) return alert('Enter UserID or Name'); doLogin(v); });
-if (qs('logoutBtn')) qs('logoutBtn').addEventListener('click', ()=>{ if(qs('loginInput')) qs('loginInput').value=''; if(qs('userInfo')) qs('userInfo').innerText=''; if(qs('filtersCard')) qs('filtersCard').style.display='none'; if(qs('output')) qs('output').innerHTML=''; if(qs('logoutBtn')) qs('logoutBtn').style.display='none'; });
-
-async function doLogin(val){
-  try {
-    const res = await callApi('validateUserCredential','POST',{ input: val });
-    dbg('debugDash',{validate:res});
-    if (!res) { alert('Invalid user or backend error'); return; }
-    let u = (res.user || res);
-    if (res.ok && res.user) u = res.user;
-    if (!u || !u.valid) { alert('Invalid UserID/Name'); return; }
-    if (qs('userInfo')) qs('userInfo').innerText = 'Logged in: ' + u.name + ' (' + u.userid + ')';
-    if (qs('logoutBtn')) qs('logoutBtn').style.display = 'inline-block';
-    const gp = qs('gp'); if (gp) { gp.innerHTML = '<option value="">--All--</option>'; (u.panchayats||[]).forEach(p=>{ const o=document.createElement('option'); o.value=p; o.textContent=p; gp.appendChild(o); }); }
-    if (window._gpsByEngineer) {
-      const gpsByEngineer = window._gpsByEngineer;
-      const engines = Object.keys(gpsByEngineer).filter(e=>{
-        const arr = (gpsByEngineer[e]||[]).map(x=>(''+x).trim().toLowerCase());
-        return (u.panchayats||[]).some(up => arr.indexOf((''+up).trim().toLowerCase()) !== -1);
-      });
-      populate('engineer', engines);
-      window._engineers = engines.map(x=>(''+x).trim());
-    }
-    if (qs('filtersCard')) qs('filtersCard').style.display = 'block';
-    await fetchTable({}, u.userid);
-  } catch(err){ dbg('debugDash',{loginError:String(err)}); alert('Login error: '+String(err)); }
-}
-
-/* wireControls + save handling (sends top-level fields) */
-function wireControls(){
-  let apply = qs('filterBtn') || qs('applyBtn') || document.querySelector('[data-action="applyFilter"]');
-  if (apply) apply.addEventListener('click', ()=> {
-    const filter = {
-      engineer: qs('engineer')?qs('engineer').value:'',
-      gp: qs('gp')?qs('gp').value:'',
-      work: qs('work')?qs('work').value:'',
-      status: qs('status')?qs('status').value:'',
-      year: qs('year')?qs('year').value:'',
-      category: qs('category')?qs('category').value:'',
-      search: qs('search')?qs('search').value:''
-    };
-    const userid = qs('loginInput')?qs('loginInput').value.trim():'';
-    fetchTable(filter, userid);
-  });
-
-  let reset = qs('resetBtn') || document.querySelector('[data-action="resetFilters"]');
-  if (reset) reset.addEventListener('click', ()=>{
-    ['engineer','gp','work','status','year','category','search','percentThreshold','percentMode'].forEach(id=>{
-      const el = qs(id); if (!el) return;
-      if (el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') el.value = '';
-    });
-    // reset percent default value if present
-    if (qs('percentThreshold')) qs('percentThreshold').value = '75';
-    if (qs('percentMode')) qs('percentMode').value = 'above';
-
-    const userid = qs('loginInput')?qs('loginInput').value.trim():'';
-    if (userid) fetchTable({}, userid);
-  });
-
-  // Percent filter button wiring
-  const applyPctBtn = qs('applyPercentFilter');
-  if (applyPctBtn) applyPctBtn.addEventListener('click', ()=>{
-    const t = qs('percentThreshold')?qs('percentThreshold').value: '';
-    const m = qs('percentMode')?qs('percentMode').value: 'above';
-    applyPercentFilter(t, m);
-  });
-
-  const tabDash = qs('tabDashboard'), tabCreate = qs('tabCreate'), panelDash = qs('panelDashboard'), panelCreate = qs('panelCreate');
-  if (tabDash) tabDash.addEventListener('click', ()=>{ if (tabDash) tabDash.classList.add('active'); if (tabCreate) tabCreate.classList.remove('active'); if (panelDash) panelDash.style.display='block'; if (panelCreate) panelCreate.style.display='none'; });
-  if (tabCreate) tabCreate.addEventListener('click', ()=>{ if (tabCreate) tabCreate.classList.add('active'); if (tabDash) tabDash.classList.remove('active'); if (panelCreate) panelCreate.style.display='block'; if (panelDash) panelDash.style.display='none'; });
-
-  let create = qs('createBtn') || document.querySelector('[data-action="openCreateUser"]');
-  if (create) create.addEventListener('click', ()=>{ const tab = qs('tabCreate'); if (tab) tab.click(); else { const panel = qs('createUserPanel') || qs('panelCreate') || document.getElementById('createUser'); if (panel) panel.style.display = 'block'; } });
-
-  const saveBtn = qs('btnSave');
-  if (saveBtn) {
-    saveBtn.addEventListener('click', async ()=>{
-      const statusEl = qs('statusCreate') || null;
-      const name = (qs('c_name')?qs('c_name').value.trim():'');
-      const post = (qs('c_post')?qs('c_post').value.trim():'');
-      const dcode = (qs('c_dcode')?qs('c_dcode').value.trim():'77');
-
-      let panchayats = [];
-      const sel = qs('c_panchayats');
-      if (sel) {
-        if (sel.tagName === 'SELECT' && sel.multiple) Array.from(sel.selectedOptions||[]).forEach(o=>{ if (o && o.value) panchayats.push((''+o.value).trim()); });
-        else if (sel.value) panchayats = (''+sel.value).split(/\s*,\s*/).map(x=>x.trim()).filter(Boolean);
-      }
-
-      dbg('debugCreate',{sending:{name:name,post:post,dcode:dcode,panchayats:panchayats}});
-      if (!name || !post || !panchayats.length) {
-        if (statusEl) statusEl.innerText = 'Please fill Name, Post and select at least one Panchayat.';
-        alert('Please fill Name, Post and select at least one Panchayat.');
-        return;
-      }
-      if (statusEl) statusEl.innerText = 'Saving...';
-
-      const payload = { name: name, post: post, dcode: dcode, panchayats: panchayats };
-
-      try {
-        // Send top-level fields as expected by backend.gs
-        const res = await callApi('appendOrUpdateUser','POST', payload);
-        dbg('debugCreate',{result:res});
-        if (res && (res.ok || res.result || res.action)) {
-          const msg = 'Saved: ' + JSON.stringify(res);
-          if (statusEl) statusEl.innerText = msg;
-          try { await init(); } catch(e){ console.warn('init refresh failed', e); }
-          return;
-        } else {
-          if (statusEl) statusEl.innerText = 'Save response: ' + JSON.stringify(res);
-        }
-      } catch(err){
-        dbg('debugCreate',{error:String(err)});
-        console.warn('callApi failed, falling back to direct fetch', err);
-      }
-
-      // DIRECT FETCH fallback — send explicit form fields
-      try {
-        const params = new URLSearchParams();
-        params.set('action', 'appendOrUpdateUser');
-        params.set('name', payload.name);
-        params.set('post', payload.post);
-        params.set('dcode', payload.dcode);
-        // send panchayats as JSON string so Apps Script can parse
-        params.set('panchayats', JSON.stringify(payload.panchayats));
-
-        const resp = await fetch(window.APPSCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-          body: params.toString(),
-          mode: 'cors'
-        });
-
-        const rawText = await resp.text();
-        let parsed = null;
-        try { parsed = JSON.parse(rawText); } catch(e){ /* not json */ }
-
-        dbg('debugCreate',{directFetchStatus: resp.status, statusText: resp.statusText, rawText: rawText, parsed: parsed});
-
-        if (resp.ok && parsed && (parsed.ok || parsed.result || parsed.action)) {
-          const msg = 'Saved (directFetch): ' + JSON.stringify(parsed);
-          if (statusEl) statusEl.innerText = msg;
-          try { await init(); } catch(e){ console.warn('init refresh failed', e); }
-          return;
-        } else {
-          const msg = 'Save failed: HTTP ' + resp.status + ' — see debugCreate for raw response';
-          if (statusEl) statusEl.innerText = msg;
-          alert(msg + '\n\nOpen console/network tab for raw response.');
-        }
-
-      } catch(fetchErr) {
-        dbg('debugCreate',{error:'direct_fetch_failed', message: String(fetchErr)});
-        if (statusEl) statusEl.innerText = 'Direct fetch error: ' + String(fetchErr);
-        alert('Network or CORS error when saving. Check console and Network tab for details.');
-      }
-    });
-  }
-}
-
-/* init */
-async function init(){
-  if (!window.APPSCRIPT_URL || window.APPSCRIPT_URL.trim() === '') { dbg('debugDash','Set window.APPSCRIPT_URL'); return; }
-  try {
-    const dd = await callApi('getDropdownData','GET');
-    if (dd && dd.ok && dd.data) {
-      const dt = dd.data;
-      if (qs('lastUpdate')) qs('lastUpdate').innerText = 'Last Update: ' + (dt.updateTime || '');
-      populate('year', dt.years || []); populate('work', dt.works || []); populate('status', dt.status || []); populate('engineer', dt.engineers || []);
-      window._gpsByEngineer = dt.gpsByEngineer || {};
-
-      let catList = Array.isArray(dt.categories) ? uniqClean(dt.categories) : [];
-      if (!catList || catList.length === 0) {
-        try {
-          const rowsRes = await callApi('getFilteredData','POST',{ filter: {}, userid: '' });
-          let rows = [];
-          if (rowsRes && Array.isArray(rowsRes)) rows = rowsRes;
-          else if (rowsRes && rowsRes.ok && Array.isArray(rowsRes.rows)) rows = rowsRes.rows;
-          const rawCats = (rows||[]).map(r => { if (!Array.isArray(r)) return ''; return (r[19] === undefined || r[19] === null) ? '' : (''+r[19]).trim(); });
-          catList = uniqClean(rawCats);
-        } catch(e){ dbg('debugDash',{categoryFallbackError: String(e)}); }
-      }
-      populate('category', catList || []);
-
-      const cPans = qs('c_panchayats');
-      if (cPans) { cPans.innerHTML = ''; const allPans = dt.allPanchayats || []; (allPans||[]).forEach(p=>{ if (!p) return; const o = document.createElement('option'); o.value = p; o.textContent = p; cPans.appendChild(o); }); }
-
-      try {
-        let postsRes = await callApi('getPostOptionsFromUserIdSheet','GET');
-        let posts = [];
-        if (postsRes && postsRes.ok && Array.isArray(postsRes.result)) posts = postsRes.result;
-        else if (Array.isArray(postsRes)) posts = postsRes;
-        if ((!posts || posts.length === 0) && dt && Array.isArray(dt.posts)) posts = dt.posts;
-        if (!posts || posts.length === 0) posts = ['Engg','GRS','Schive','AE','Other'];
-
-        const cPost = qs('c_post');
-        if (cPost) { cPost.innerHTML = ''; posts.forEach(p=>{ if (p === null || p === undefined) return; const s = (''+p).trim(); if (!s) return; const o = document.createElement('option'); o.value = s; o.textContent = s; cPost.appendChild(o); }); }
-      } catch(e){
-        dbg('debugDash',{postPopulateError: String(e)});
-        const cPost = qs('c_post');
-        if (cPost && cPost.options.length === 1 && (cPost.options[0].text||'').toLowerCase().indexOf('loading') !== -1) {
-          cPost.innerHTML = '';
-          ['Engg','GRS','Schive','AE','Other'].forEach(p=>{ const o = document.createElement('option'); o.value = p; o.textContent = p; cPost.appendChild(o); });
-        }
-      }
-
-      dbg('debugDash',{dropdowns:dt, categoryUsed: catList});
-    } else {
-      dbg('debugDash',{error:dd});
-    }
-  } catch(err){ dbg('debugDash',{error:String(err)}); }
-
-  wireControls();
-
-  const userid = qs('loginInput')?qs('loginInput').value.trim():'';
-  if (userid) { try { await fetchTable({}, userid); } catch(e){ dbg('debugDash',{error:String(e)}); } }
-}
-
-/* start */
-(async function(){ await init(); })();
+// ---------- END REPLACEMENT ----------
