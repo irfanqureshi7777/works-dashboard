@@ -5,8 +5,64 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Works Dashboard</title>
 
-  <link rel="stylesheet" href="styles.css">
-  <!-- (Optional) override below with your Apps Script URL in app.js -->
+  <style>
+    :root{
+      --bg:#f6f8fb;
+      --card:#ffffff;
+      --muted:#6b7280;
+      --accent:#0b78e3;
+      --accent-2:#0b6bd6;
+      --radius:12px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,#eef4ff 0%,var(--bg) 60%);color:#0f172a}
+
+    .container{max-width:1100px;margin:28px auto;padding:18px}
+    .card{background:var(--card);border-radius:var(--radius);box-shadow:0 6px 20px rgba(11,23,47,0.08);padding:16px}
+
+    .tabs{display:flex;gap:8px;margin-bottom:8px}
+    .tab-btn{background:transparent;border:0;padding:8px 12px;border-radius:10px;font-weight:600;cursor:pointer}
+    .tab-btn.active{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:#fff}
+
+    .meta{color:var(--muted);font-size:13px}
+    .muted{color:var(--muted);font-size:13px}
+
+    .small{padding:8px;border-radius:8px;border:1px solid #e6edf6;background:#fbfdff}
+    input.small, select.small{width:100%;font-size:14px}
+
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}
+
+    .table-wrap{margin-top:14px;overflow:auto}
+    #output{min-height:120px}
+
+    /* frozen header */
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left}
+    th{background:#fbfdff;position:sticky;top:0;z-index:3} /* frozen title row */
+
+    /* helper to hide columns on screen without removing filters */
+    .col-hidden{display:none}
+
+    /* Column-config panel */
+    #colConfig{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    #colConfig label{font-size:13px}
+
+    /* PRINT: include hidden columns and full table */
+    @media print{
+      html,body{height:auto;background:transparent}
+      .tabs, .tab-btn, #loginArea, #filtersCard, .close-x, button{display:none !important}
+      .container{max-width:100%;margin:0;padding:0}
+      .card{box-shadow:none;border-radius:0;padding:0}
+      .table-wrap{overflow:visible}
+      .col-hidden{display:table-cell !important} /* show hidden cols while printing */
+      th{position:static}
+      table{page-break-inside:auto}
+      tr{page-break-inside:avoid;page-break-after:auto}
+    }
+  </style>
 </head>
 <body>
   <div class="container">
@@ -31,7 +87,17 @@
           </div>
         </div>
 
+        <div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <button id="showFilters" class="tab-btn">Toggle Filters</button>
+            <button id="colConfigBtn" class="tab-btn">Configure Columns</button>
+            <button id="printBtn" class="tab-btn">Print / Save as PDF</button>
+          </div>
+          <div id="colConfig" style="display:none"></div>
+        </div>
+
         <div id="filtersCard" class="card" style="margin-top:12px;display:none">
+          <!-- filters kept as before (they won't be removed when columns hidden) -->
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
             <h3 style="margin:0">Filters (You will see only your Panchayats)</h3>
             <div style="display:flex;gap:8px">
@@ -71,7 +137,7 @@
             </div>
           </div>
 
-          <!-- PERCENT FILTER: added for % Expenditure (reads from Sheet V column) -->
+          <!-- percent filter etc. kept same -->
           <div class="row" style="margin-top:10px;align-items:center;gap:8px">
             <div style="flex:0 0 220px;">
               <label>% Expenditure</label>
@@ -98,13 +164,32 @@
         </div>
 
         <div class="table-wrap" style="margin-top:12px">
-          <div id="output"></div>
+          <div id="output">
+            <!-- Example table structure. Your app.js should create table rows and keep data-col attributes -->
+            <table id="worksTable">
+              <thead>
+                <tr>
+                  <th data-col="sr">Sr</th>
+                  <th data-col="gp">Gram Panchayat</th>
+                  <th data-col="engineer">Engineer</th>
+                  <th data-col="labour">Labour</th>
+                  <th data-col="works">Works</th>
+                  <th data-col="status">Status</th>
+                  <th data-col="category">Category</th>
+                  <th data-col="expenditure">% Expenditure</th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- rows added by app.js -->
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <details style="margin-top:10px"><summary>Debug / backend</summary><pre id="debugDash">no calls yet</pre></details>
       </div>
 
-      <!-- CREATE / update user -->
+      <!-- CREATE / update user (kept same) -->
       <div id="panelCreate" style="display:none">
         <div class="card">
           <h2 style="margin:0 0 6px 0">Create / Update User</h2>
@@ -116,8 +201,6 @@
 
             <label for="c_post">Post</label>
             <select id="c_post" class="small"><option>Loading posts...</option></select>
-
-            <!-- removed Engg input as requested -->
 
             <label for="c_panchayats">Panchayats (multiple)</label>
             <select id="c_panchayats" multiple style="width:100%;min-height:120px"></select>
@@ -140,10 +223,10 @@
     </div>
   </div>
 
-  <!-- modal (overlay) --->
-  <div id="modalOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-hidden="true">
-    <div class="modal-card">
-      <div class="modal-header">
+  <!-- modal -->
+  <div id="modalOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-hidden="true" style="display:none;position:fixed;inset:0;align-items:center;justify-content:center;padding:24px;background:rgba(2,6,23,0.45)">
+    <div style="background:#fff;border-radius:12px;max-width:920px;width:100%;padding:16px;box-shadow:0 18px 40px rgba(2,6,23,0.3)">
+      <div style="display:flex;align-items:center;justify-content:space-between">
         <div>
           <div id="modalTitle" class="modal-title">Work Details</div>
           <div id="modalMeta" class="meta"></div>
@@ -153,11 +236,110 @@
           <button id="modalClose" class="close-x">Close</button>
         </div>
       </div>
-
       <div id="modalBody" style="margin-top:8px"></div>
     </div>
   </div>
 
   <script src="app.js"></script>
+  <script>
+    (function(){
+      const $ = id => document.getElementById(id);
+      const show = (el)=> el && (el.style.display = 'block');
+      const hide = (el)=> el && (el.style.display = 'none');
+
+      // Tabs
+      $('tabDashboard').addEventListener('click', ()=>{
+        $('tabDashboard').classList.add('active');
+        $('tabCreate').classList.remove('active');
+        show($('panelDashboard')); hide($('panelCreate'));
+      });
+      $('tabCreate').addEventListener('click', ()=>{
+        $('tabCreate').classList.add('active');
+        $('tabDashboard').classList.remove('active');
+        show($('panelCreate')); hide($('panelDashboard'));
+      });
+
+      // Modal close
+      $('modalClose').addEventListener('click', ()=>{ $('modalOverlay').style.display='none'; });
+      document.getElementById('modalOverlay').addEventListener('click', (e)=>{ if(e.target === e.currentTarget) e.currentTarget.style.display='none'; });
+
+      // Toggle filters
+      $('showFilters').addEventListener('click', ()=>{
+        const f = $('filtersCard');
+        f.style.display = (f.style.display === 'none' || f.style.display === '') ? 'block' : 'none';
+      });
+
+      // Column config button
+      $('colConfigBtn').addEventListener('click', ()=>{
+        const panel = $('colConfig');
+        panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+        if(panel.children.length === 0) buildColumnConfig();
+      });
+
+      // Print
+      $('printBtn').addEventListener('click', ()=>{ window.print(); });
+
+      // Column config builder
+      function buildColumnConfig(){
+        const panel = $('colConfig');
+        panel.innerHTML = '';
+        const ths = Array.from(document.querySelectorAll('#worksTable thead th'));
+        ths.forEach(th=>{
+          const col = th.dataset.col || th.textContent.trim().toLowerCase().replace(/\s+/g,'_');
+          const id = 'chk_'+col;
+          const wrapper = document.createElement('label');
+          wrapper.style.display='flex';wrapper.style.alignItems='center';wrapper.style.gap='6px';
+          const chk = document.createElement('input'); chk.type='checkbox'; chk.id=id; chk.checked = !th.classList.contains('col-hidden');
+          chk.addEventListener('change', ()=> toggleColumn(col, !chk.checked));
+          wrapper.appendChild(chk);
+          const span = document.createElement('span'); span.textContent = th.textContent.trim();
+          wrapper.appendChild(span);
+          panel.appendChild(wrapper);
+        });
+      }
+
+      function toggleColumn(colName, hide){
+        const selector = '[data-col="'+colName+'"]';
+        document.querySelectorAll(selector).forEach(el=>{
+          if(hide) el.classList.add('col-hidden'); else el.classList.remove('col-hidden');
+        });
+      }
+
+      function setHiddenColumns(list){
+        if(!Array.isArray(list)) return;
+        list.forEach(c=> toggleColumn(c, true));
+        if($('colConfig').children.length) buildColumnConfig();
+      }
+
+      function showAllColumnsForPrint(){
+        const hidden = Array.from(document.querySelectorAll('th.col-hidden')).map(th=>th.dataset.col);
+        document.body.dataset._hiddenCols = JSON.stringify(hidden);
+        document.querySelectorAll('.col-hidden').forEach(el=>el.classList.remove('col-hidden'));
+      }
+      function restoreHiddenColumnsAfterPrint(){
+        try{
+          const hidden = JSON.parse(document.body.dataset._hiddenCols || '[]');
+          hidden.forEach(c=> toggleColumn(c, true));
+          delete document.body.dataset._hiddenCols;
+        }catch(e){}
+      }
+
+      if('onbeforeprint' in window){
+        window.onbeforeprint = showAllColumnsForPrint;
+        window.onafterprint = restoreHiddenColumnsAfterPrint;
+      }
+
+      // API for app.js
+      window.__worksUI = {
+        openModal: (title, html)=>{ $('modalTitle').textContent = title||'Details'; $('modalBody').innerHTML = html||''; $('modalOverlay').style.display='flex'; },
+        setHiddenColumns: setHiddenColumns,
+        getHiddenColumns: ()=> Array.from(document.querySelectorAll('th.col-hidden')).map(th=>th.dataset.col),
+        rebuild: function(){ document.querySelectorAll('#worksTable thead th').forEach(th=>th.style.top='0px'); if($('colConfig').children.length) buildColumnConfig(); }
+      };
+
+      Array.from(document.querySelectorAll('.small')).forEach(i=>i.addEventListener('focus', ()=>i.style.boxShadow='0 6px 18px rgba(11,23,47,0.06)'));
+
+    })();
+  </script>
 </body>
 </html>
